@@ -1,23 +1,30 @@
 import fetch from 'node-fetch';
 import cheerio from 'cheerio';
 import fs from 'fs';
-import { log } from 'console';
+import { pipeline } from 'stream';
+import { promisify } from 'util'
 
-const rootDir = './story';
-const linkStory = 'http://www.nettruyenpro.com/truyen-tranh/funouhan-10657';
-const linkChap = 'http://www.nettruyenpro.com/truyen-tranh/funouhan/chap-37/789687';
-const numberChap = 6;
+const rootDir = './story-' + String(Date.now());
+const linkStory = 'http://www.nettruyenpro.com/truyen-tranh/trong-sinh-tro-thanh-mon-trang-mieng-cua-tong-tai-ma-ca-rong-48023';
+// const linkChap = 'http://www.nettruyenpro.com/truyen-tranh/anh-dao-tam-doc/chap-10/743453';
+// const numberChap = 6;
 
 function parseLinkForStory(linkStory) {
   return new Promise(async (resolve, reject) => {
     const attackOneStory = [];
     try {
       // get content html nettruyen
-      const content = await (await fetch(linkStory)).text();
+      const content = await (await fetch(linkStory, { headers: 
+        { 
+          'Referer': 'http://www.nettruyenpro.com/',
+          // 'Referer': 'https://www.nettruyenonline.com/',
+          'Connection': 'keep-alive'
+        }
+      })).text();
       // init dom virtual by cheerio
       const $ = cheerio.load(content);
       // access node a
-      const nodes = $('li.row div.chapter a[data-id]');
+      const nodes = $('li.row div.chapter a');
       // loop nodes image get attributes src of image
       for(let node of nodes) {
         if(String(node.attribs.href).includes('http') || String(node.attribs.href).includes('https')) {
@@ -37,12 +44,13 @@ function parseLinkForStory(linkStory) {
 
 function parseLinkForChap(linkChap) {
   return new Promise(async (resolve, reject) => {
-    const attackOneChapter = [];
     try {
+      const attackOneChapter = [];
       // get content html nettruyen
-      const content = await (await fetch(linkChap)).text();
+      const response = await fetch(String(linkChap, { headers: { 'Referer': 'http://www.nettruyenpro.com/', 'Connection': 'keep-alive' } }));
+      const body = await response.text();
       // init dom virtual by cheerio
-      const $ = cheerio.load(content);
+      const $ = cheerio.load(body);
       // access node image
       const nodes = $('.page-chapter img');
       // loop nodes image get attributes src of image
@@ -65,15 +73,18 @@ function parseLinkForChap(linkChap) {
 function downloadImage(link, path) {
   return new Promise(async (resolve, reject) => {
     try {
-      const shift = fs.createWriteStream(path);
-      const getResponse = await fetch(link, { headers: { 'Referer': 'http://www.nettruyenpro.com/' } });
-      const arraybuffer = await getResponse.arrayBuffer();
-      const buffer = new Uint8Array(arraybuffer);
-      shift.on('finish', function() {
-        resolve(true);
+      const response = await fetch(link, { headers: { 
+        'Referer': 'http://www.nettruyenpro.com/',
+        'Connection': 'keep-alive',
+        'accept-encoding': 'gzip, deflate, br',
+        'authority': 'blogger.googleusercontent.com'
+      }});
+      if (!response.ok) throw new Error(`unexpected response ${response.statusText}`);
+      const streamPipeline = promisify(pipeline);
+      await streamPipeline(response.body, fs.createWriteStream(path))
+      .then(() => {
+        resolve();
       })
-      shift.write(buffer);
-      resolve(true);
     } catch (error) {
       reject(error);
     }
@@ -85,12 +96,12 @@ async function downloadForChap(chap) {
     const promiseForChap = [];
     try {
       let index = 0;
-      const path = `${rootDir}/chapter-${index}`;
+      const path = `${rootDir}/${chap.chap}`;
       const checkPath = fs.existsSync(path);
       if(!checkPath) {
         fs.mkdirSync(path, { recursive: true });
       }
-      for(let item of chap['data-image']) {
+      for await(let item of chap['data-image']) {
         promiseForChap.push(downloadImage(item, `${path}/index-${index}.jpg`));
         index++;
       }
@@ -103,45 +114,27 @@ async function downloadForChap(chap) {
   })
 }
 
-async function handleAll(linkStory, numberChap) {
+async function handleAll(linkStory) {
   try {
-    const promiseForChap = [];
-    const promiseForPic = [];
+    console.time('Time crawl');
     const stateLinkStory = await parseLinkForStory(linkStory);
-    if(stateLinkStory) {
-      console.log('Clone xong chap của truyện ^^!');
-    }
-    for(let chap of stateLinkStory) {
-      promiseForChap.push(parseLinkForChap(chap.link));
-    }
-    const picForChap = await Promise.all(promiseForChap)
-    stateLinkStory.forEach((ele, index) => {
-      stateLinkStory[index]['data-image'] = picForChap[index];
-    });
-    if(stateLinkStory) {
-      console.log('Clone xong link ảnh của truyện ^^!');
-    }
-    // action download by number chap
-    for(let index = 0; index < numberChap; index++) {
-      promiseForPic.push(downloadForChap(stateLinkStory[index]));
-    }
-    const result = await Promise.all(promiseForPic)
-    if(result) {
-      console.log('Clone xong ^^!');
+    // console.log(stateLinkStory)
+    console.timeEnd('Time crawl');
+    console.log('<<<<<<<<<< --- Đã crawl xong dữ liệu để tải xuống --- >>>>>>>>>>');
+    let index = 0;
+    for (const chap of stateLinkStory) {
+      downloadChap(chap.link, index, chap.chap);
+      index++;
     }
   } catch (error) {
     console.log(error)
   }
 }
 
-async function downloadChap(linkChap) {
+async function downloadChap(linkChap, index, name) {
   let dataImage = await parseLinkForChap(linkChap);
-  downloadForChap({ 'data-image': dataImage, chap: 'mission' });
+  await downloadForChap({ 'data-image': dataImage, chap: 'mission-' + (index + 1) });
+  console.log("<<<<<<<<<< --- Clone xong " + name + " --- >>>>>>>>>>");
 }
 
-console.time('test');
-
-// handleAll(linkStory, numberChap);
-downloadChap(linkChap);
-
-console.timeEnd('test');
+handleAll(linkStory);
